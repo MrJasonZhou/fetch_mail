@@ -1,0 +1,5 @@
+mail.ini
+state.json
+*.log
+__pycache__/
+*.pyc

@@ -1,0 +1,22 @@
+[YahooJapanMail]
+; 受信メール（IMAP）
+imap_server = imap.mail.yahoo.co.jp
+imap_ssl    = SSL
+imap_port   = 993
+; 受信メール（POP）
+pop_server  = pop.mail.yahoo.co.jp
+pop_ssl     = SSL
+pop_port    = 995
+; 送信メール（SMTP）
+smtp_server = smtp.mail.yahoo.co.jp
+smtp_auth   = SMTP_AUTH
+smtp_ssl    = SSL
+smtp_port   = 465
+; アカウント情報（アカウント名/ログイン名 = Yahoo! JAPAN ID）
+username    = your_yahoo_japan_id
+email       = your_address@ymail.ne.jp
+password    = your_password
+; 可选：ESP 白名单（逗号分隔）
+; esp_whitelist = mpse.jp, amazonses.com
+; 可选：垃圾箱文件夹名（留空自动检测）
+; junk_folder = Bulk Mail
