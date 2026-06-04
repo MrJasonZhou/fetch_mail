@@ -1,50 +1,50 @@
 # mail-spam-filter
 
-Yahoo Japan Mail (IMAP) 垃圾邮件自动过滤脚本。  
-通过检查邮件头，将垃圾邮件移动到「Bulk Mail」文件夹，每 2 分钟由 cron 自动运行。
+Yahoo Japan Mail (IMAP) の迷惑メール自動フィルタスクリプト。
+メールヘッダーを検査し、迷惑メールを「Bulk Mail」フォルダへ移動します。cron により 2 分ごとに自動実行されます。
 
 ---
 
-## 文件结构
+## ファイル構成
 
 ```
 mails/
-├── fetch_mail.py     # 主程序
-├── mail.ini          # 账户配置（本地，不入库）
-├── mail.ini.example  # 配置模板
-├── state.json        # 增量运行状态，保存 last_uid（本地，不入库）
-├── fetch_mail.log    # 运行日志（本地，不入库）
+├── fetch_mail.py     # メインプログラム
+├── mail.ini          # アカウント設定（ローカル、リポジトリ管理外）
+├── mail.ini.example  # 設定テンプレート
+├── state.json        # 差分実行の状態。last_uid を保存（ローカル、リポジトリ管理外）
+├── fetch_mail.log    # 実行ログ（ローカル、リポジトリ管理外）
 └── README.md
 ```
 
 ---
 
-## 快速开始
+## クイックスタート
 
-### 1. 安装依赖
+### 1. 依存関係のインストール
 
-仅使用 Python 标准库，无需额外安装。Python 3.9+ 即可。
+Python 標準ライブラリのみを使用するため、追加インストールは不要です。Python 3.9 以上で動作します。
 
-### 2. 配置账户
+### 2. アカウントの設定
 
 ```bash
 cp mail.ini.example mail.ini
-# 编辑 mail.ini，填入真实的账户信息
+# mail.ini を編集し、実際のアカウント情報を入力してください
 ```
 
-### 3. 手动运行
+### 3. 手動実行
 
 ```bash
 python3 fetch_mail.py YahooJapanMail
 ```
 
-### 4. 设置 Cron（每 2 分钟自动运行）
+### 4. Cron の設定（2 分ごとに自動実行）
 
 ```bash
 crontab -e
 ```
 
-添加：
+以下を追加します：
 
 ```
 */2 * * * * /usr/bin/python3 /path/to/mails/fetch_mail.py YahooJapanMail >> /path/to/mails/fetch_mail.log 2>&1
@@ -52,7 +52,7 @@ crontab -e
 
 ---
 
-## 配置文件说明（mail.ini）
+## 設定ファイルの説明（mail.ini）
 
 ```ini
 [YahooJapanMail]
@@ -61,7 +61,7 @@ imap_server = imap.mail.yahoo.co.jp
 imap_ssl    = SSL
 imap_port   = 993
 
-; 送信メール（SMTP）※ 当前脚本仅收信，SMTP 供扩展使用
+; 送信メール（SMTP）※ 現在のスクリプトは受信のみ。SMTP は拡張用
 smtp_server = smtp.mail.yahoo.co.jp
 smtp_auth   = SMTP_AUTH
 smtp_ssl    = SSL
@@ -72,45 +72,45 @@ username    = your_yahoo_japan_id
 email       = your_address@ymail.ne.jp
 password    = your_password
 
-; 可选：ESP 白名单（逗号分隔，Return-Path 域名在此列表时跳过规则2）
+; 任意：ESP ホワイトリスト（カンマ区切り。Return-Path ドメインがこのリストにある場合はルール2をスキップ）
 ; esp_whitelist = mpse.jp, amazonses.com
 
-; 可选：指定垃圾箱文件夹名（留空则自动检测）
+; 任意：迷惑メールフォルダ名を指定（空欄の場合は自動検出）
 ; junk_folder = Bulk Mail
 ```
 
 ---
 
-## 垃圾邮件判定规则
+## 迷惑メール判定ルール
 
-| 规则 | 检查项 | 说明 |
+| ルール | 検査項目 | 説明 |
 |------|--------|------|
-| 1 | DMARC | `Authentication-Results` 中含 `dmarc=fail` 或 `dmarc=none` |
-| 2 | 域名不一致 | `Return-Path` 域名与 `From` 域名不同（ESP 白名单除外） |
-| 3 | SPF | `Received-SPF` 为 `none` 或 `fail` |
-| 4 | 廉价 TLD | 发送域使用高滥用后缀，如 `.top` `.xyz` `.icu` `.cfd` `.club` 等 |
+| 1 | DMARC | `Authentication-Results` に `dmarc=fail` または `dmarc=none` を含む |
+| 2 | ドメイン不一致 | `Return-Path` のドメインが `From` のドメインと異なる（ESP ホワイトリストを除く） |
+| 3 | SPF | `Received-SPF` が `none` または `fail` |
+| 4 | 低価格 TLD | 送信ドメインが悪用率の高い TLD（`.top` `.xyz` `.icu` `.cfd` `.club` など）を使用 |
 
 ---
 
-## 增量运行逻辑
+## 差分実行のロジック
 
-- 首次运行：取最新 32 封作为起点，保存最大 IMAP UID
-- 后续运行：只处理 `UID > last_uid` 的新邮件，避免重复处理
-- 状态保存在 `state.json`
-
----
-
-## 处理动作
-
-- **保留**：通过检查的邮件保持不动
-- **移动**：判定为垃圾的邮件复制到 `Bulk Mail` → 原件标记删除 → EXPUNGE
+- 初回実行：最新 32 件を起点とし、最大の IMAP UID を保存
+- 2 回目以降：`UID > last_uid` の新着メールのみを処理し、重複処理を回避
+- 状態は `state.json` に保存
 
 ---
 
-## 日志格式
+## 処理アクション
+
+- **保持**：検査を通過したメールはそのまま残す
+- **移動**：迷惑メールと判定したメールを `Bulk Mail` へコピー → 元メールに削除フラグを付与 → EXPUNGE
+
+---
+
+## ログ形式
 
 ```
-[2026-05-19 19:30:56] [YahooJapanMail] imap.mail.yahoo.co.jp:993 に接続中 (IMAP) ...
+[2026-05-19 19:30:56] [YahooJapanMail] imap.mail.yahoo.co.jp:993 に接続 (IMAP) / 迷惑メールフォルダ: 'Bulk Mail'
 [2026-05-19 19:30:57] [YahooJapanMail] 差分実行 — UID 223255 以降の新着 3 件
 [2026-05-19 19:30:57]   [移動済 UID=223260] 件名: 'iCloud次回請求についてのお知らせ'
 [2026-05-19 19:30:57]            差出人: iCloud <info@suspicious.top>
