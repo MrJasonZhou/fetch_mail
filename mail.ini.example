@@ -16,7 +16,8 @@ smtp_port   = 465
 username    = your_yahoo_japan_id
 email       = your_address@ymail.ne.jp
 password    = your_password
-; 可选：ESP 白名单（逗号分隔）
-; esp_whitelist = mpse.jp, amazonses.com
-; 可选：垃圾箱文件夹名（留空自动检测）
+; オプション：ESPホワイトリスト（カンマ区切り）
+; 信頼できる送信サービス（Return-Path と From が一致しない場合があるもの）を登録
+esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktomail.com, salesforce.com, exacttarget.com, m-msg.jp, msg-m.jp, bmsend.com, benchmarkemail.com, hubspot.com, hubspotemail.net, cmail1.com, shopify.com, mandrillapp.com, mailgun.org, postmarkapp.com, constantcontact.com, brevo.com, combzmail.jp, itm-asp.com, customer-s.jp, yahoofp.jp, mail-mag.jp
+; オプション：迷惑メールフォルダ名（空の場合は自動検出）
 ; junk_folder = Bulk Mail

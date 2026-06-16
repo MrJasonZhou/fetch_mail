@@ -73,7 +73,8 @@ email       = your_address@ymail.ne.jp
 password    = your_password
 
 ; 任意：ESP ホワイトリスト（カンマ区切り。Return-Path ドメインがこのリストにある場合はルール2をスキップ）
-; esp_whitelist = mpse.jp, amazonses.com
+; 信頼できる送信サービス（Return-Path と From が一致しない場合があるもの）を登録
+esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktomail.com, salesforce.com, exacttarget.com, m-msg.jp, msg-m.jp, bmsend.com, benchmarkemail.com, hubspot.com, hubspotemail.net, cmail1.com, shopify.com, mandrillapp.com, mailgun.org, postmarkapp.com, constantcontact.com, brevo.com, combzmail.jp, itm-asp.com, customer-s.jp, yahoofp.jp, mail-mag.jp
 
 ; 任意：迷惑メールフォルダ名を指定（空欄の場合は自動検出）
 ; junk_folder = Bulk Mail
