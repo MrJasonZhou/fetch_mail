@@ -357,4 +357,10 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print(f"使い方: {sys.argv[0]} <セクション名>")
         sys.exit(1)
-    fetch_and_clean(sys.argv[1])
+    section = sys.argv[1]
+    try:
+        fetch_and_clean(section)
+    except Exception as e:
+        # ponytail: trace は出さず、原因が分かる最小限の情報だけログに残す
+        log(f"[{section}] エラーで中断 — {type(e).__name__}: {e}")
+        sys.exit(1)
