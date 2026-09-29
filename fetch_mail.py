@@ -43,6 +43,7 @@ from typing import Optional
 
 CONFIG_FILE = Path(__file__).parent / "mail.ini"
 STATE_FILE  = Path(__file__).parent / "state.json"
+JUDGMENT_LOG = Path(__file__).parent / "jev_judgments.jsonl"  # ルール4 の判定記録
 SEED_LIMIT  = 32   # 初回実行時に処理するメッセージ数
 
 
@@ -134,6 +135,33 @@ def jev_spam_probability(msg: email.message.Message) -> Optional[float]:
         return None
 
 
+def record_judgment(msg: email.message.Message, rp: str, fr: str,
+                    p: Optional[float], decision: str) -> None:
+    """ルール4 の判定を JSONL で別途記録する（1〜2 か月後に策略の妥当性を検証するため）。"""
+    auth = " ".join(msg.get_all("Authentication-Results", [])).lower()
+    rec = {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "section": CURRENT_SECTION,
+        "message_id": msg.get("Message-ID", ""),
+        "from": msg.get("From", ""),
+        "return_path": msg.get("Return-Path", ""),
+        "reply_to": msg.get("Reply-To", ""),
+        "subject": decode_subject(msg),
+        "rp_domain": rp,
+        "from_domain": fr,
+        "dmarc": (re.search(r"dmarc=(\w+)", auth) or [None, None])[1],
+        "dkim": (re.search(r"dkim=(\w+)", auth) or [None, None])[1],
+        "spf": (re.search(r"spf=(\w+)", auth) or [None, None])[1],
+        "jev_spam": p,
+        "decision": decision,
+    }
+    try:
+        with JUDGMENT_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log(f"  判定ログ書き込み失敗: {e}")
+
+
 def add_to_whitelist(domain: str, esp_whitelist: set[str]) -> None:
     """mail.ini の esp_whitelist 行に domain を追記（コメントを保持するため行単位で書き換え）。
     実行中セクションの esp_whitelist を優先し、なければ [DEFAULT] のものを書き換える。"""
@@ -214,19 +242,26 @@ def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[boo
         return True, f"Suspicious TLD: .{tld} (domain={sending_domain!r})"
 
     # ルール4 – 送信ドメイン不一致（誤検知が多いため最後に判定し、Jev で再確認）
-    if rp and fr and rp != fr and rp not in esp_whitelist:
+    if rp and fr and rp != fr:
         reason = f"Domain mismatch: Return-Path={rp!r}, From={fr!r}"
+        if rp in esp_whitelist:
+            record_judgment(msg, rp, fr, None, "whitelisted")
+            return False, ""
         p = jev_spam_probability(msg)
         if p is None:
             # Jev 未設定・失敗時: IMAP は迷惑メールへ移動（復元可）、POP3 は削除が不可逆なので保持
+            record_judgment(msg, rp, fr, None, "fail_spam" if JEV_FAIL_AS_SPAM else "fail_keep")
             if JEV_FAIL_AS_SPAM:
                 return True, reason
             log(f"  Jev 判定不可のため保持 (POP3) — {reason}")
             return False, ""
         if p >= JEV_SPAM_THRESHOLD:
+            record_judgment(msg, rp, fr, p, "spam")
             return True, f"{reason}, Jev spam={p:.2f}"
         log(f"  Jev 判定: 正規メール (spam={p:.2f}) — {reason}")
-        if p < JEV_WHITELIST_THRESHOLD:
+        whitelist = p < JEV_WHITELIST_THRESHOLD
+        record_judgment(msg, rp, fr, p, "keep_whitelist" if whitelist else "keep")
+        if whitelist:
             add_to_whitelist(rp, esp_whitelist)
 
     return False, ""

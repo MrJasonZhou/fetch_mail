@@ -14,6 +14,7 @@ tmp = Path(tempfile.mkdtemp()) / "mail.ini"
 tmp.write_text("[DEFAULT]\nesp_whitelist = d.jp\n[A]\nesp_whitelist = a.jp\n"
                "[X]\nesp_whitelist = mpse.jp\n", encoding="utf-8")
 fm.CONFIG_FILE = tmp
+fm.JUDGMENT_LOG = tmp.parent / "j.jsonl"
 # 自動ホワイトリストは実行中セクションに、なければ DEFAULT に書く
 fm.CURRENT_SECTION = "B"; fm.add_to_whitelist("b.jp", set())
 assert "esp_whitelist = d.jp, b.jp" in tmp.read_text()
@@ -48,4 +49,8 @@ fm.jev_spam_probability = lambda msg: None
 assert fm.check_spam(mk("a@x.jp", "b@unknown-esp.jp", "hi"), wl)[0]
 fm.JEV_FAIL_AS_SPAM = False
 assert not fm.check_spam(mk("a@x.jp", "b@unknown-esp.jp", "hi"), wl)[0]
+import json
+recs = [json.loads(l) for l in fm.JUDGMENT_LOG.read_text().splitlines()]
+assert {"spam", "keep_whitelist", "fail_spam", "fail_keep"} <= {r["decision"] for r in recs}
+assert recs[0]["dmarc"] == "pass" and recs[0]["rp_domain"] == "besender-s.jp"
 print("TEST OK")
