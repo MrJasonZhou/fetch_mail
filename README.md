@@ -72,12 +72,15 @@ username    = your_yahoo_japan_id
 email       = your_address@ymail.ne.jp
 password    = your_password
 
-; 任意：ESP ホワイトリスト（カンマ区切り。Return-Path ドメインがこのリストにある場合はルール2をスキップ）
+; 任意：ESP ホワイトリスト（カンマ区切り。Return-Path ドメインがこのリストにある場合はルール4をスキップ。Jev が正規と判定したドメインは自動追記される）
 ; 信頼できる送信サービス（Return-Path と From が一致しない場合があるもの）を登録
 esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktomail.com, salesforce.com, exacttarget.com, m-msg.jp, msg-m.jp, bmsend.com, benchmarkemail.com, hubspot.com, hubspotemail.net, cmail1.com, shopify.com, mandrillapp.com, mailgun.org, postmarkapp.com, constantcontact.com, brevo.com, combzmail.jp, itm-asp.com, customer-s.jp, yahoofp.jp, mail-mag.jp
 
 ; 任意：迷惑メールフォルダ名を指定（空欄の場合は自動検出）
 ; junk_folder = Bulk Mail
+
+; 任意：TypeSafe API キー（ルール4の Jev 再判定用。環境変数 TYPESAFE_API_KEY が優先）
+; typesafe_api_key = your_typesafe_api_key
 ```
 
 ---
@@ -87,9 +90,9 @@ esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktom
 | ルール | 検査項目 | 説明 |
 |------|--------|------|
 | 1 | DMARC | `Authentication-Results` に `dmarc=fail` または `dmarc=none` を含む |
-| 2 | ドメイン不一致 | `Return-Path` のドメインが `From` のドメインと異なる（ESP ホワイトリストを除く） |
-| 3 | SPF | `Received-SPF` が `none` または `fail` |
-| 4 | 低価格 TLD | 送信ドメインが悪用率の高い TLD（`.top` `.xyz` `.icu` `.cfd` `.club` など）を使用 |
+| 2 | SPF | `Received-SPF` が `none` または `fail` |
+| 3 | 低価格 TLD | 送信ドメインが悪用率の高い TLD（`.top` `.xyz` `.icu` `.cfd` `.club` など）を使用 |
+| 4 | ドメイン不一致 | `Return-Path` のドメインが `From` のドメインと異なる（ESP ホワイトリストを除く）。誤検知が多いため、[TypeSafe](https://typesafe.ai) の Jev で差出人・返信先・件名などから再判定する。スパム確率 0.5 以上でスパム、0.2 未満なら `Return-Path` ドメインを `mail.ini` の `esp_whitelist` に自動追加。API キー未設定・呼び出し失敗時は従来どおりスパム扱い |
 
 ---
 

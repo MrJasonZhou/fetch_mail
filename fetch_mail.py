@@ -12,9 +12,11 @@ IMAP/POP3による差分スパムフィルター。
 
 スパム判定ルール：
   1. Authentication-Results に dmarc=fail または dmarc=none が含まれる
-  2. Return-Path のドメインと From のドメインが異なる（ESP ホワイトリスト除外）
-  3. Received-SPF が none または fail（SPF 認証失敗）
-  4. 送信ドメインが廉価・濫用の多い TLD を使用している
+  2. Received-SPF が none または fail（SPF 認証失敗）
+  3. 送信ドメインが廉価・濫用の多い TLD を使用している
+  4. Return-Path のドメインと From のドメインが異なる（ESP ホワイトリスト除外）
+     → TypeSafe Jev で本当にスパムか再判定。正規と判断されれば
+       Return-Path ドメインを mail.ini の esp_whitelist に自動追加
 
 設定ファイル（mail.ini）:
   [DEFAULT] セクションに esp_whitelist をカンマ区切りで記述（全セクション共有）
@@ -31,9 +33,12 @@ import email.message
 import re
 import json
 import configparser
+import os
+import urllib.request
 from datetime import datetime
 from email.header import decode_header
 from pathlib import Path
+from typing import Optional
 
 
 CONFIG_FILE = Path(__file__).parent / "mail.ini"
@@ -75,10 +80,89 @@ SUSPICIOUS_TLDS = {
 }
 
 
+JEV_API_KEY = ""  # mail.ini の typesafe_api_key（環境変数 TYPESAFE_API_KEY 優先）
+CURRENT_SECTION = ""  # 実行中のセクション名（自動ホワイトリストの書き込み先）
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
+JEV_SPAM_THRESHOLD      = 0.5   # これ以上ならスパム
+JEV_WHITELIST_THRESHOLD = 0.2   # これ未満なら Return-Path ドメインをホワイトリストへ追加
+# ponytail: 閾値は固定値。誤判定が目立つようなら実データで調整すること
+
+
+def jev_spam_probability(msg: email.message.Message) -> Optional[float]:
+    """TypeSafe Jev にヘッダーを渡し、スパムである確率を返す。キー未設定・失敗時は None。"""
+    key = os.environ.get("TYPESAFE_API_KEY") or JEV_API_KEY
+    if not key:
+        return None
+    state = {
+        "from": msg.get("From", ""),
+        "return_path": msg.get("Return-Path", ""),
+        "reply_to": msg.get("Reply-To", ""),
+        "sender": msg.get("Sender", ""),
+        "subject": decode_subject(msg),
+        "list_unsubscribe": msg.get("List-Unsubscribe", ""),
+        "authentication_results": msg.get_all("Authentication-Results", []),
+    }
+    body = {
+        "model": "jev-latest",
+        "state": state,
+        "questions": {"spam": {
+            "type": "noul",
+            "instructions": (
+                "This email's Return-Path domain differs from its From domain, which is "
+                "common for newsletters sent through bulk-mail services. It already passed "
+                "DMARC/SPF checks (see `authentication_results`). Judging from `from`, "
+                "`return_path`, `reply_to`, `sender`, `subject` and `list_unsubscribe`, is this spam or phishing rather than legitimate mail "
+                "(e.g. a newsletter or notification sent via a bulk-mail delivery service)?"
+            ),
+            "criteria": {
+                "true": "Spam, scam or phishing: sender identity looks forged or unrelated, "
+                        "reply-to points elsewhere suspiciously, or the subject is bait.",
+                "false": "Legitimate mail: the Return-Path is a plausible email delivery "
+                         "service or affiliate domain for the From organization.",
+            },
+        }},
+    }
+    req = urllib.request.Request(
+        JEV_URL, data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return float(json.load(r)["answers"]["spam"]["noul"])
+    except Exception as e:
+        log(f"  Jev 呼び出し失敗: {type(e).__name__}: {e}")
+        return None
+
+
+def add_to_whitelist(domain: str, esp_whitelist: set[str]) -> None:
+    """mail.ini の esp_whitelist 行に domain を追記（コメントを保持するため行単位で書き換え）。
+    実行中セクションの esp_whitelist を優先し、なければ [DEFAULT] のものを書き換える。"""
+    esp_whitelist.add(domain)
+    lines = CONFIG_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    found: dict[str, int] = {}
+    sec = ""
+    for i, line in enumerate(lines):
+        m = re.match(r"\s*\[([^\]]+)\]", line)
+        if m:
+            sec = m.group(1)
+        elif re.match(r"\s*esp_whitelist\s*=", line):
+            found.setdefault(sec, i)
+    i = found.get(CURRENT_SECTION, found.get("DEFAULT"))
+    if i is None:
+        log(f"  mail.ini に esp_whitelist 行がないため {domain} は今回のみ許可")
+        return
+    lines[i] = lines[i].rstrip() + f", {domain}\n"
+    CONFIG_FILE.write_text("".join(lines), encoding="utf-8")
+    log(f"  ホワイトリストに追加: {domain}")
+
+
 def load_esp_whitelist(cfg: dict) -> set[str]:
     """設定ファイルの esp_whitelist をカンマ区切りで読み込む。"""
     raw = cfg.get("esp_whitelist", "")
     return {d.strip().lower() for d in raw.split(",") if d.strip()}
+
+
+SECOND_LEVELS = {"co", "ne", "or", "ac", "go", "ed", "gr", "lg", "ad",
+                 "com", "net", "org", "gov", "edu"}
 
 
 def extract_domain(address: str) -> str:
@@ -87,7 +171,9 @@ def extract_domain(address: str) -> str:
     if not m:
         return ""
     parts = m.group(1).lower().rstrip(".").split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else parts[0]
+    # ponytail: co.jp / com.cn 等の2段 ccTLD だけ簡易対応。厳密にするなら Public Suffix List
+    n = 3 if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in SECOND_LEVELS else 2
+    return ".".join(parts[-n:])
 
 
 def extract_tld(domain: str) -> str:
@@ -106,15 +192,7 @@ def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[boo
         if m and m.group(1) in ("fail", "none"):
             return True, f"DMARC check: dmarc={m.group(1)}"
 
-    # ルール2 – 送信ドメイン不一致（ESP ホワイトリストは除外）
-    return_path = msg.get("Return-Path", "")
-    from_header = msg.get("From", "")
-    rp = extract_domain(return_path)
-    fr = extract_domain(from_header)
-    if rp and fr and rp != fr and rp not in esp_whitelist:
-        return True, f"Domain mismatch: Return-Path={rp!r}, From={fr!r}"
-
-    # ルール3 – SPF none / fail
+    # ルール2 – SPF none / fail
     spf_header = " ".join(v for k, v in msg.items()
                           if k.lower() == "received-spf").lower()
     if spf_header:
@@ -122,12 +200,29 @@ def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[boo
         if spf_m:
             return True, f"SPF check: {spf_m.group(1)}"
 
-    # ルール4 – 廉価・濫用 TLD
+    return_path = msg.get("Return-Path", "")
+    from_header = msg.get("From", "")
+    rp = extract_domain(return_path)
+    fr = extract_domain(from_header)
+
+    # ルール3 – 廉価・濫用 TLD
     # Return-Path と From 両方のドメイン TLD を確認
     sending_domain = rp or fr
     tld = extract_tld(sending_domain)
     if tld in SUSPICIOUS_TLDS:
         return True, f"Suspicious TLD: .{tld} (domain={sending_domain!r})"
+
+    # ルール4 – 送信ドメイン不一致（誤検知が多いため最後に判定し、Jev で再確認）
+    if rp and fr and rp != fr and rp not in esp_whitelist:
+        reason = f"Domain mismatch: Return-Path={rp!r}, From={fr!r}"
+        p = jev_spam_probability(msg)
+        if p is None:
+            return True, reason  # Jev 未設定・失敗時は従来どおりスパム扱い
+        if p >= JEV_SPAM_THRESHOLD:
+            return True, f"{reason}, Jev spam={p:.2f}"
+        log(f"  Jev 判定: 正規メール (spam={p:.2f}) — {reason}")
+        if p < JEV_WHITELIST_THRESHOLD:
+            add_to_whitelist(rp, esp_whitelist)
 
     return False, ""
 
@@ -343,6 +438,9 @@ def fetch_and_clean(section: str) -> None:
     cfg           = load_config(section)
     state         = load_state()
     esp_whitelist = load_esp_whitelist(cfg)
+    global JEV_API_KEY, CURRENT_SECTION
+    CURRENT_SECTION = section
+    JEV_API_KEY   = cfg.get("typesafe_api_key", "").strip()
     mode          = cfg.get("mode", "imap").strip().lower()
 
     if mode == "imap":

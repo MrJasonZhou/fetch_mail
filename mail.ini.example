@@ -21,3 +21,5 @@ password    = your_password
 esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktomail.com, salesforce.com, exacttarget.com, m-msg.jp, msg-m.jp, bmsend.com, benchmarkemail.com, hubspot.com, hubspotemail.net, cmail1.com, shopify.com, mandrillapp.com, mailgun.org, postmarkapp.com, constantcontact.com, brevo.com, combzmail.jp, itm-asp.com, customer-s.jp, yahoofp.jp, mail-mag.jp
 ; オプション：迷惑メールフォルダ名（空の場合は自動検出）
 ; junk_folder = Bulk Mail
+; オプション：TypeSafe API キー（ドメイン不一致時の Jev 再判定用。環境変数 TYPESAFE_API_KEY が優先）
+; typesafe_api_key = your_typesafe_api_key
