@@ -82,6 +82,7 @@ SUSPICIOUS_TLDS = {
 
 
 JEV_API_KEY = ""  # mail.ini の typesafe_api_key（環境変数 TYPESAFE_API_KEY 優先）
+JUDGMENT_LOG_ENABLED = False  # mail.ini の jev_judgment_log（ルール4 の判定を JSONL に記録するか）
 JEV_FAIL_AS_SPAM = True  # Jev 判定不可時にスパム扱いするか（POP3 では False）
 CURRENT_SECTION = ""  # 実行中のセクション名（自動ホワイトリストの書き込み先）
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
@@ -138,6 +139,8 @@ def jev_spam_probability(msg: email.message.Message) -> Optional[float]:
 def record_judgment(msg: email.message.Message, rp: str, fr: str,
                     p: Optional[float], decision: str) -> None:
     """ルール4 の判定を JSONL で別途記録する（1〜2 か月後に策略の妥当性を検証するため）。"""
+    if not JUDGMENT_LOG_ENABLED:
+        return
     auth = " ".join(msg.get_all("Authentication-Results", [])).lower()
     rec = {
         "time": datetime.now().isoformat(timespec="seconds"),
@@ -480,7 +483,8 @@ def fetch_and_clean(section: str) -> None:
     cfg           = load_config(section)
     state         = load_state()
     esp_whitelist = load_esp_whitelist(cfg)
-    global JEV_API_KEY, CURRENT_SECTION, JEV_FAIL_AS_SPAM
+    global JEV_API_KEY, CURRENT_SECTION, JEV_FAIL_AS_SPAM, JUDGMENT_LOG_ENABLED
+    JUDGMENT_LOG_ENABLED = cfg.get("jev_judgment_log", "false").strip().lower() in ("true", "yes", "1", "on")
     CURRENT_SECTION = section
     JEV_API_KEY   = cfg.get("typesafe_api_key", "").strip()
     mode          = cfg.get("mode", "imap").strip().lower()

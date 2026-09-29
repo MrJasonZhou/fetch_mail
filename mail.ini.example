@@ -23,3 +23,5 @@ esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktom
 ; junk_folder = Bulk Mail
 ; オプション：TypeSafe API キー（ドメイン不一致時の Jev 再判定用。環境変数 TYPESAFE_API_KEY が優先）
 ; typesafe_api_key = your_typesafe_api_key
+; オプション：ルール4（ドメイン不一致+Jev）の判定を jev_judgments.jsonl に記録するか（true/false）
+jev_judgment_log = false

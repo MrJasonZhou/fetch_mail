@@ -15,6 +15,10 @@ tmp.write_text("[DEFAULT]\nesp_whitelist = d.jp\n[A]\nesp_whitelist = a.jp\n"
                "[X]\nesp_whitelist = mpse.jp\n", encoding="utf-8")
 fm.CONFIG_FILE = tmp
 fm.JUDGMENT_LOG = tmp.parent / "j.jsonl"
+fm.JUDGMENT_LOG_ENABLED = False
+fm.record_judgment(email.message_from_string("From: a@b.jp\n"), "x.jp", "b.jp", None, "keep")
+assert not fm.JUDGMENT_LOG.exists()  # 無効時は記録しない
+fm.JUDGMENT_LOG_ENABLED = True
 # 自動ホワイトリストは実行中セクションに、なければ DEFAULT に書く
 fm.CURRENT_SECTION = "B"; fm.add_to_whitelist("b.jp", set())
 assert "esp_whitelist = d.jp, b.jp" in tmp.read_text()
