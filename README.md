@@ -25,6 +25,7 @@ mails/
 ├── fetch_mail.log    # 実行ログ（ローカル、リポジトリ管理外）
 ├── jev_judgments.jsonl  # Jev 判定ログ（jev_judgment_log = true 時、ローカル、リポジトリ管理外）
 ├── test_fetch_mail.py   # 動作確認スクリプト（Jev を実際に呼ぶ）
+├── show_judgments.py    # jev_judgments.jsonl を表形式で表示（python show_judgments.py [件数]）
 └── README.md
 ```
 
