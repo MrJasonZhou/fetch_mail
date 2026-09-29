@@ -12,7 +12,7 @@ IMAP/POP3による差分スパムフィルター。
 
 スパム判定ルール：
   1. Authentication-Results に dmarc=fail または dmarc=none が含まれる
-  2. Received-SPF が none または fail（SPF 認証失敗）
+  2. Received-SPF が none または fail（DMARC pass 時は適用しない）
   3. 送信ドメインが廉価・濫用の多い TLD を使用している
   4. Return-Path のドメインと From のドメインが異なる（ESP ホワイトリスト除外）
      → TypeSafe Jev で本当にスパムか再判定。正規と判断されれば
@@ -215,6 +215,20 @@ def extract_tld(domain: str) -> str:
     return domain.rsplit(".", 1)[-1].lower()
 
 
+TRUSTED_AUTHSERV = "yahoo.co.jp"  # 受信サーバー（Authentication-Results の authserv-id）
+
+
+def trusted_dmarc_pass(msg: email.message.Message) -> bool:
+    """受信サーバー自身の DMARC pass で、かつ header.from が From と一致するか。
+    受信サーバーは最上部に追加するため先頭の Authentication-Results のみ信頼する（下位は偽造可能）。"""
+    top = " ".join(msg.get("Authentication-Results", "").split()).lower()
+    authserv = top.split(";", 1)[0].strip()
+    if not (authserv == TRUSTED_AUTHSERV or authserv.endswith("." + TRUSTED_AUTHSERV)):
+        return False
+    m = re.search(r"dmarc=pass\b[^;]*?header\.from=([\w.\-]+)", top)
+    return bool(m) and extract_domain("@" + m.group(1)) == extract_domain(msg.get("From", ""))
+
+
 def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[bool, str]:
     # ルール1 – DMARC 検証
     auth = " ".join(v for k, v in msg.items()
@@ -225,9 +239,12 @@ def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[boo
             return True, f"DMARC check: dmarc={m.group(1)}"
 
     # ルール2 – SPF none / fail
+    # DMARC pass なら DKIM 等で From は認証済み。サブドメインに SPF 未設定の正規メールを
+    # 誤検知しないよう、SPF は DMARC 結果がないメールにのみ適用する
+    dmarc_pass = trusted_dmarc_pass(msg)
     spf_header = " ".join(v for k, v in msg.items()
                           if k.lower() == "received-spf").lower()
-    if spf_header:
+    if spf_header and not dmarc_pass:
         spf_m = re.match(r"\s*(none|fail)\b", spf_header)
         if spf_m:
             return True, f"SPF check: {spf_m.group(1)}"

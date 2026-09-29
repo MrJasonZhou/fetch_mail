@@ -5,7 +5,7 @@ import fetch_mail as fm
 
 def mk(frm, rp, subj, auth="spf=pass smtp.mailfrom=RP; dkim=pass header.d=RP; dmarc=pass header.from=FR", spf="pass", reply_to=""):
     raw = (f"From: {frm}\nReturn-Path: <{rp}>\nSubject: {subj}\n"
-           f"Authentication-Results: mx; {auth.replace('RP', rp.split('@')[1]).replace('FR', frm.split('@')[1].rstrip('>'))}\nReceived-SPF: {spf}\n")
+           f"Authentication-Results: mta.mail.yahoo.co.jp; {auth.replace('RP', rp.split('@')[1]).replace('FR', frm.split('@')[1].rstrip('>'))}\nReceived-SPF: {spf}\n")
     if reply_to:
         raw += f"Reply-To: {reply_to}\n"
     return email.message_from_string(raw)
@@ -28,6 +28,14 @@ wl = {"mpse.jp"}
 # 優先順位: DMARC/SPF/TLD が先に効く（Jev は呼ばれない）
 assert fm.check_spam(mk("a@x.xyz", "b@y.com", "hi", auth="dmarc=fail"), wl)[1].startswith("DMARC")
 assert fm.check_spam(mk("a@x.co.jp", "b@y.top", "hi"), wl)[1].startswith("Suspicious")
+# SPF none/fail は DMARC pass なら無視、DMARC 結果なしなら適用
+assert not fm.check_spam(mk("a@x.co.jp", "b@x.co.jp", "hi", spf="none"), wl)[0]
+assert fm.check_spam(mk("a@x.co.jp", "b@x.co.jp", "hi", auth="spf=none", spf="none"), wl)[1] == "SPF check: none"
+# 偽造対策: 別ドメインの DMARC pass、受信サーバー以外の認証頭では SPF を免除しない
+assert fm.check_spam(mk("a@x.co.jp", "b@x.co.jp", "hi", auth="dmarc=pass header.from=evil.com", spf="none"), wl)[0]
+forged = email.message_from_string("From: a@x.co.jp\nReturn-Path: <b@x.co.jp>\nReceived-SPF: fail\n"
+    "Authentication-Results: evil.example; dmarc=pass header.from=x.co.jp\n")
+assert fm.check_spam(forged, wl)[1] == "SPF check: fail"
 # 正規の配信サービス経由 → 保持 + ホワイトリスト追加
 ok = mk("えまなび <info@emanabi.jp>", "bounce-123@besender-s.jp", "【えまなび】講座開講のお知らせ")
 print("legit:", fm.check_spam(ok, wl), fm.jev_spam_probability(ok))
