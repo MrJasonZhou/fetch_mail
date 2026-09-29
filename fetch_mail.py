@@ -15,8 +15,8 @@ IMAP/POP3による差分スパムフィルター。
   2. Received-SPF が none または fail（DMARC pass 時は適用しない）
   3. 送信ドメインが廉価・濫用の多い TLD を使用している
   4. Return-Path のドメインと From のドメインが異なる（ESP ホワイトリスト除外）
-     → TypeSafe Jev で本当にスパムか再判定。正規と判断されれば
-       Return-Path ドメインを mail.ini の esp_whitelist に自動追加
+     → TypeSafe Jev で本当にスパムか再判定。正規と判断され、かつ
+       Return-Path ドメイン自体も正規と判断されれば mail.ini の esp_whitelist に自動追加
 
 設定ファイル（mail.ini）:
   [DEFAULT] セクションに esp_whitelist をカンマ区切りで記述（全セクション共有）
@@ -87,12 +87,14 @@ JEV_FAIL_AS_SPAM = True  # Jev 判定不可時にスパム扱いするか（POP3
 CURRENT_SECTION = ""  # 実行中のセクション名（自動ホワイトリストの書き込み先）
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_SPAM_THRESHOLD      = 0.5   # これ以上ならスパム
-JEV_WHITELIST_THRESHOLD = 0.2   # これ未満なら Return-Path ドメインをホワイトリストへ追加
+JEV_WHITELIST_THRESHOLD = 0.2   # スパム確率がこれ未満、かつ
+JEV_DOMAIN_OK_THRESHOLD = 0.7   # ドメイン正規確率がこれ以上なら Return-Path ドメインをホワイトリストへ追加
 # ponytail: 閾値は固定値。誤判定が目立つようなら実データで調整すること
 
 
-def jev_spam_probability(msg: email.message.Message) -> Optional[float]:
-    """TypeSafe Jev にヘッダーを渡し、スパムである確率を返す。キー未設定・失敗時は None。"""
+def jev_judge(msg: email.message.Message, rp: str) -> Optional[tuple[float, float]]:
+    """TypeSafe Jev にヘッダーを渡し、(スパム確率, Return-Path ドメインが正規である確率) を返す。
+    2 問は同一リクエストで並列に判定される。キー未設定・失敗時は None。"""
     key = os.environ.get("TYPESAFE_API_KEY") or JEV_API_KEY
     if not key:
         return None
@@ -104,6 +106,7 @@ def jev_spam_probability(msg: email.message.Message) -> Optional[float]:
         "subject": decode_subject(msg),
         "list_unsubscribe": msg.get("List-Unsubscribe", ""),
         "authentication_results": msg.get_all("Authentication-Results", []),
+        "return_path_domain": rp,
     }
     body = {
         "model": "jev-latest",
@@ -123,6 +126,20 @@ def jev_spam_probability(msg: email.message.Message) -> Optional[float]:
                 "false": "Legitimate mail: the Return-Path is a plausible email delivery "
                          "service or affiliate domain for the From organization.",
             },
+        }, "domain_ok": {
+            # ホワイトリストは永続的なので、メール単体の印象とは別にドメイン自体を評価する
+            "type": "noul",
+            "instructions": (
+                "Judging only the domain name `return_path_domain`, is it an established, "
+                "legitimate domain that deserves to be permanently trusted as a sender of bounces "
+                "(a known email delivery service, a mobile carrier or ISP, or a real company's "
+                "own or affiliate domain)?"
+            ),
+            "criteria": {
+                "true": "Recognizable or meaningful name of a real service or organization.",
+                "false": "Random-looking, meaningless character string, throwaway or "
+                         "look-alike domain typical of spam infrastructure.",
+            },
         }},
     }
     req = urllib.request.Request(
@@ -130,14 +147,15 @@ def jev_spam_probability(msg: email.message.Message) -> Optional[float]:
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            return float(json.load(r)["answers"]["spam"]["noul"])
+            a = json.load(r)["answers"]
+            return float(a["spam"]["noul"]), float(a["domain_ok"]["noul"])
     except Exception as e:
         log(f"  Jev 呼び出し失敗: {type(e).__name__}: {e}")
         return None
 
 
 def record_judgment(msg: email.message.Message, rp: str, fr: str,
-                    p: Optional[float], decision: str) -> None:
+                    p: Optional[float], decision: str, domain_ok: Optional[float] = None) -> None:
     """ルール4 の判定を JSONL で別途記録する（1〜2 か月後に策略の妥当性を検証するため）。"""
     if not JUDGMENT_LOG_ENABLED:
         return
@@ -156,6 +174,7 @@ def record_judgment(msg: email.message.Message, rp: str, fr: str,
         "dkim": (re.search(r"dkim=(\w+)", auth) or [None, None])[1],
         "spf": (re.search(r"spf=(\w+)", auth) or [None, None])[1],
         "jev_spam": p,
+        "jev_domain_ok": domain_ok,
         "decision": decision,
     }
     try:
@@ -267,20 +286,21 @@ def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[boo
         if rp in esp_whitelist:
             record_judgment(msg, rp, fr, None, "whitelisted")
             return False, ""
-        p = jev_spam_probability(msg)
-        if p is None:
+        j = jev_judge(msg, rp)
+        if j is None:
             # Jev 未設定・失敗時: IMAP は迷惑メールへ移動（復元可）、POP3 は削除が不可逆なので保持
             record_judgment(msg, rp, fr, None, "fail_spam" if JEV_FAIL_AS_SPAM else "fail_keep")
             if JEV_FAIL_AS_SPAM:
                 return True, reason
             log(f"  Jev 判定不可のため保持 (POP3) — {reason}")
             return False, ""
+        p, domain_ok = j
         if p >= JEV_SPAM_THRESHOLD:
-            record_judgment(msg, rp, fr, p, "spam")
+            record_judgment(msg, rp, fr, p, "spam", domain_ok)
             return True, f"{reason}, Jev spam={p:.2f}"
-        log(f"  Jev 判定: 正規メール (spam={p:.2f}) — {reason}")
-        whitelist = p < JEV_WHITELIST_THRESHOLD
-        record_judgment(msg, rp, fr, p, "keep_whitelist" if whitelist else "keep")
+        log(f"  Jev 判定: 正規メール (spam={p:.2f}, domain_ok={domain_ok:.2f}) — {reason}")
+        whitelist = p < JEV_WHITELIST_THRESHOLD and domain_ok >= JEV_DOMAIN_OK_THRESHOLD
+        record_judgment(msg, rp, fr, p, "keep_whitelist" if whitelist else "keep", domain_ok)
         if whitelist:
             add_to_whitelist(rp, esp_whitelist)
 

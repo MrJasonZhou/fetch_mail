@@ -38,7 +38,7 @@ forged = email.message_from_string("From: a@x.co.jp\nReturn-Path: <b@x.co.jp>\nR
 assert fm.check_spam(forged, wl)[1] == "SPF check: fail"
 # 正規の配信サービス経由 → 保持 + ホワイトリスト追加
 ok = mk("えまなび <info@emanabi.jp>", "bounce-123@besender-s.jp", "【えまなび】講座開講のお知らせ")
-print("legit:", fm.check_spam(ok, wl), fm.jev_spam_probability(ok))
+print("legit:", fm.check_spam(ok, wl), fm.jev_judge(ok, "besender-s.jp"))
 # 明らかなフィッシング → スパム
 bad = mk("Amazon <account-update@amazon.co.jp>", "xk29@mail-q8z.ru",
          "【緊急】アカウントが停止されました。24時間以内に確認してください",
@@ -54,10 +54,16 @@ for frm, rp, subj in [
     ("南大学 <koho@minami-u.jp>", "owner-list@y-ml.com", "オープンキャンパスのご案内"),
     ("フリーライフ <info@freelife-co.jp>", "bounce@jinsuiwl.com", "ご請求書送付のお知らせ"),
 ]:
-    print(rp, round(fm.jev_spam_probability(mk(frm, rp, subj)), 3))
+    print(rp, fm.jev_judge(mk(frm, rp, subj), fm.extract_domain(rp)))
 
 # Jev 判定不可: IMAP はスパム扱い、POP3 は保持（削除は不可逆）
-fm.jev_spam_probability = lambda msg: None
+# ホワイトリスト追加はスパム確率が低く、かつドメインが正規と判断された場合のみ
+real_judge = fm.jev_judge
+fm.jev_judge = lambda msg, rp: (0.05, 0.05)  # 正規メールだがランダムなドメイン
+assert not fm.check_spam(mk("a@x.jp", "b@xk7q9zmw3.com", "hi"), wl)[0] and "xk7q9zmw3.com" not in wl
+fm.jev_judge = lambda msg, rp: (0.05, 0.95)
+assert not fm.check_spam(mk("a@x.jp", "b@good-esp.jp", "hi"), wl)[0] and "good-esp.jp" in wl
+fm.jev_judge = lambda msg, rp: None
 assert fm.check_spam(mk("a@x.jp", "b@unknown-esp.jp", "hi"), wl)[0]
 fm.JEV_FAIL_AS_SPAM = False
 assert not fm.check_spam(mk("a@x.jp", "b@unknown-esp.jp", "hi"), wl)[0]
