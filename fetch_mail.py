@@ -81,6 +81,7 @@ SUSPICIOUS_TLDS = {
 
 
 JEV_API_KEY = ""  # mail.ini の typesafe_api_key（環境変数 TYPESAFE_API_KEY 優先）
+JEV_FAIL_AS_SPAM = True  # Jev 判定不可時にスパム扱いするか（POP3 では False）
 CURRENT_SECTION = ""  # 実行中のセクション名（自動ホワイトリストの書き込み先）
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_SPAM_THRESHOLD      = 0.5   # これ以上ならスパム
@@ -217,7 +218,11 @@ def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[boo
         reason = f"Domain mismatch: Return-Path={rp!r}, From={fr!r}"
         p = jev_spam_probability(msg)
         if p is None:
-            return True, reason  # Jev 未設定・失敗時は従来どおりスパム扱い
+            # Jev 未設定・失敗時: IMAP は迷惑メールへ移動（復元可）、POP3 は削除が不可逆なので保持
+            if JEV_FAIL_AS_SPAM:
+                return True, reason
+            log(f"  Jev 判定不可のため保持 (POP3) — {reason}")
+            return False, ""
         if p >= JEV_SPAM_THRESHOLD:
             return True, f"{reason}, Jev spam={p:.2f}"
         log(f"  Jev 判定: 正規メール (spam={p:.2f}) — {reason}")
@@ -438,10 +443,11 @@ def fetch_and_clean(section: str) -> None:
     cfg           = load_config(section)
     state         = load_state()
     esp_whitelist = load_esp_whitelist(cfg)
-    global JEV_API_KEY, CURRENT_SECTION
+    global JEV_API_KEY, CURRENT_SECTION, JEV_FAIL_AS_SPAM
     CURRENT_SECTION = section
     JEV_API_KEY   = cfg.get("typesafe_api_key", "").strip()
     mode          = cfg.get("mode", "imap").strip().lower()
+    JEV_FAIL_AS_SPAM = mode != "pop3"
 
     if mode == "imap":
         fetch_and_clean_imap(section, cfg, state, esp_whitelist)

@@ -92,7 +92,7 @@ esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktom
 | 1 | DMARC | `Authentication-Results` に `dmarc=fail` または `dmarc=none` を含む |
 | 2 | SPF | `Received-SPF` が `none` または `fail` |
 | 3 | 低価格 TLD | 送信ドメインが悪用率の高い TLD（`.top` `.xyz` `.icu` `.cfd` `.club` など）を使用 |
-| 4 | ドメイン不一致 | `Return-Path` のドメインが `From` のドメインと異なる（ESP ホワイトリストを除く）。誤検知が多いため、[TypeSafe](https://typesafe.ai) の Jev で差出人・返信先・件名などから再判定する。スパム確率 0.5 以上でスパム、0.2 未満なら `Return-Path` ドメインを `mail.ini` の `esp_whitelist` に自動追加。API キー未設定・呼び出し失敗時は従来どおりスパム扱い |
+| 4 | ドメイン不一致 | `Return-Path` のドメインが `From` のドメインと異なる（ESP ホワイトリストを除く）。誤検知が多いため、[TypeSafe](https://typesafe.ai) の Jev で差出人・返信先・件名などから再判定する。スパム確率 0.5 以上でスパム、0.2 未満なら `Return-Path` ドメインを `mail.ini` の `esp_whitelist` に自動追加。API キー未設定・呼び出し失敗時は IMAP ではスパム扱い（迷惑メールフォルダへ移動）、POP3 では削除が不可逆なため保持 |
 
 ---
 

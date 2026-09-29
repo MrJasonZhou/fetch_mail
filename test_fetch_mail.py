@@ -42,3 +42,10 @@ for frm, rp, subj in [
     ("フリーライフ <info@freelife-co.jp>", "bounce@jinsuiwl.com", "ご請求書送付のお知らせ"),
 ]:
     print(rp, round(fm.jev_spam_probability(mk(frm, rp, subj)), 3))
+
+# Jev 判定不可: IMAP はスパム扱い、POP3 は保持（削除は不可逆）
+fm.jev_spam_probability = lambda msg: None
+assert fm.check_spam(mk("a@x.jp", "b@unknown-esp.jp", "hi"), wl)[0]
+fm.JEV_FAIL_AS_SPAM = False
+assert not fm.check_spam(mk("a@x.jp", "b@unknown-esp.jp", "hi"), wl)[0]
+print("TEST OK")
