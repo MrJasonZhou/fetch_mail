@@ -357,6 +357,7 @@ def fetch_and_clean_imap(section: str, cfg: dict, state: dict, esp_whitelist: se
                 log(f"  [移動済 UID={uid_int}] 件名: {subject!r}")
                 log(f"           差出人: {from_hdr}")
                 log(f"           理由  : {reason}")
+                log(f"           Msg-ID: {msg.get('Message-ID', '').strip()}")
             else:
                 log(f"  [エラー UID={uid_int}] {junk!r} へのコピー失敗 — スキップ")
         else:
@@ -458,6 +459,7 @@ def fetch_and_clean_pop3(section: str, cfg: dict, state: dict, esp_whitelist: se
             log(f"  [削除   UIDL={uidl}] 件名: {subject!r}")
             log(f"           差出人: {from_hdr}")
             log(f"           理由  : {reason}")
+            log(f"           Msg-ID: {msg.get('Message-ID', '').strip()}")
         else:
             kept += 1
             log(f"  [保持   UIDL={uidl}] 件名: {subject!r}  差出人: {from_hdr}")
