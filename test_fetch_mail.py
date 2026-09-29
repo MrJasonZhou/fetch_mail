@@ -72,3 +72,77 @@ recs = [json.loads(l) for l in fm.JUDGMENT_LOG.read_text().splitlines()]
 assert {"spam", "keep_whitelist", "fail_spam", "fail_keep"} <= {r["decision"] for r in recs}
 assert recs[0]["dmarc"] == "pass" and recs[0]["rp_domain"] == "besender-s.jp"
 print("TEST OK")
+
+
+# ── ユーザー操作からの学習（偽 IMAP サーバーで一連の流れを再現）─────────────
+class FakeIMAP:
+    boxes = {}  # {フォルダ名: {uid: raw}}
+    next_uid = 100
+
+    def __init__(self, *a): self.cur = None; self.deleted = set()
+    def login(self, *a): pass
+    def logout(self): pass
+    def select(self, name, readonly=False): self.cur = name.strip('"'); return "OK", [b""]
+    def expunge(self):
+        for u in self.deleted: self.boxes[self.cur].pop(u, None)
+        self.deleted.clear()
+    def uid(self, cmd, *args):
+        box = self.boxes[self.cur]
+        if cmd == "search":
+            lo = 1 if args[1] == "ALL" else int(args[1].split()[1].split(":")[0])
+            hits = [u for u in sorted(box) if u >= lo] or sorted(box)[-1:]  # IMAP は範囲外でも最後の1件を返す
+            return "OK", [b" ".join(str(u).encode() for u in hits)]
+        u = int(args[0])
+        if cmd == "fetch": return "OK", [(b"", box[u])]
+        if cmd == "copy": FakeIMAP.put(args[1].strip('"'), box[u]); return "OK", None
+        if cmd == "store": self.deleted.add(u); return "OK", None
+    @classmethod
+    def put(cls, box, raw):
+        cls.next_uid += 1; cls.boxes[box][cls.next_uid] = raw
+    @classmethod
+    def move(cls, src, dst, mid):
+        u = next(u for u, r in cls.boxes[src].items() if mid.encode() in r)
+        cls.put(dst, cls.boxes[src].pop(u))
+
+def raw(mid, frm, rp, rcv="by mta.yahoo.co.jp id 1"):
+    fd = frm.split("@")[1]
+    return (f"Received: {rcv}\nMessage-ID: <{mid}>\nFrom: {frm}\nReturn-Path: <{rp}>\nSubject: {mid}\n"
+            f"Authentication-Results: mta.mail.yahoo.co.jp; dmarc=pass header.from={fd}\n").encode()
+
+fm.imaplib.IMAP4_SSL = FakeIMAP
+fm.STATE_FILE = tmp.parent / "state.json"
+fm.CONFIG_FILE.write_text("[S]\nesp_whitelist = mpse.jp\n", encoding="utf-8")
+fm.CURRENT_SECTION = "S"
+fm.JEV_FAIL_AS_SPAM = True
+fm.jev_judge = lambda msg, rp: None   # Jev 失敗扱い → ドメイン不一致はスパム
+FakeIMAP.boxes = {"INBOX": {}, "Bulk Mail": {}}
+FakeIMAP.put("INBOX", raw("a@x", "news@shop.jp", "b@esp-a.jp"))  # 誤検知されるメール
+FakeIMAP.put("INBOX", raw("b@x", "info@ok.jp", "b@ok.jp"))       # 見逃されるメール
+cfg = {"imap_server": "h", "imap_port": "993", "username": "u", "password": "p", "junk_folder": "Bulk Mail"}
+run = lambda: fm.fetch_and_clean_imap("S", cfg, fm.load_state(), fm.load_esp_whitelist(fm.load_config("S")))
+
+run()
+inbox = lambda: [r for r in FakeIMAP.boxes["INBOX"].values()]
+assert [b"a@x" in r for r in inbox()] == [False] and len(FakeIMAP.boxes["Bulk Mail"]) == 1
+run()  # 自分が移動したメールを見逃しと誤認しない
+assert fm.load_state()["S"]["seen"]["<a@x>"]["verdict"] == "moved"
+
+FakeIMAP.move("Bulk Mail", "INBOX", "a@x")   # ユーザーが誤検知を救済
+FakeIMAP.move("INBOX", "Bulk Mail", "b@x")   # ユーザーが見逃しを迷惑メールへ
+run()
+st = fm.load_state()["S"]
+assert any(b"a@x" in r for r in inbox()), "救済したメールが再移動された"
+assert "esp-a.jp" in fm.load_esp_whitelist(fm.load_config("S"))
+assert st["seen"]["<a@x>"]["verdict"] == "kept" and st["seen"]["<b@x>"]["verdict"] == "junked"
+run()
+assert any(b"a@x" in r for r in inbox())
+# 同じ Message-ID で再送されたスパム（Received が異なる）は救済扱いせず通常判定
+FakeIMAP.put("INBOX", raw("c@x", "news@shop.jp", "b@spam-esp.jp"))
+run()
+FakeIMAP.put("INBOX", raw("c@x", "news@shop.jp", "b@spam-esp.jp", rcv="by mta.yahoo.co.jp id 2"))
+run()
+assert not any(b"c@x" in r for r in inbox()), "再送スパムが救済扱いで素通りした"
+assert "spam-esp.jp" not in fm.load_esp_whitelist(fm.load_config("S"))
+decisions = [json.loads(l)["decision"] for l in fm.JUDGMENT_LOG.read_text().splitlines()]
+assert "user_rescued" in decisions and "user_junked" in decisions
+print("LEARNING TEST OK")

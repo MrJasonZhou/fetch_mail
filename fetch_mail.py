@@ -18,6 +18,11 @@ IMAP/POP3による差分スパムフィルター。
      → TypeSafe Jev で本当にスパムか再判定。正規と判断され、かつ
        Return-Path ドメイン自体も正規と判断されれば mail.ini の esp_whitelist に自動追加
 
+学習（IMAP のみ）:
+  - こちらが移動したメールをユーザーが INBOX に戻した場合、再移動せず保持し
+    （ドメイン不一致が理由なら）Return-Path ドメインをホワイトリストへ追加
+  - こちらが保持したメールをユーザーが迷惑メールへ移した場合、見逃しとして記録
+
 設定ファイル（mail.ini）:
   [DEFAULT] セクションに esp_whitelist をカンマ区切りで記述（全セクション共有）
   各セクションに mode = imap または pop3 を指定
@@ -34,6 +39,7 @@ import re
 import json
 import configparser
 import os
+import hashlib
 import urllib.request
 from datetime import datetime
 from email.header import decode_header
@@ -337,6 +343,65 @@ def resolve_junk_folder(conn: imaplib.IMAP4_SSL, junk_folder_cfg: str) -> str:
     return "Trash"
 
 
+SEEN_LIMIT = 2000  # 判定済み Message-ID を覚えておく件数（ユーザー操作の検出用）
+
+
+def delivery_id(msg: email.message.Message) -> str:
+    """最上部の Received ヘッダー（受信サーバーが配送時に付与）のハッシュ。
+    ユーザーがフォルダ間で移動しても変わらず、同じ Message-ID で再送されたメールとは異なる。
+    Message-ID は送信側が自由に決められるため、これと組み合わせて同一メールかを判断する。"""
+    return hashlib.sha1(" ".join(msg.get("Received", "").split()).encode()).hexdigest()[:16]
+
+
+def same_delivery(rec: Optional[dict], msg: email.message.Message) -> bool:
+    return bool(rec) and bool(msg.get("Received")) and rec.get("rcv") == delivery_id(msg)
+
+
+def remember(sec_state: dict, msg: email.message.Message, verdict: str, reason: str = "") -> None:
+    """Message-ID ごとの判定結果を保存。古いものから捨てる。"""
+    mid = msg.get("Message-ID", "").strip()
+    if not mid:
+        return
+    seen = sec_state.setdefault("seen", {})
+    seen.pop(mid, None)
+    seen[mid] = {"verdict": verdict, "rcv": delivery_id(msg), "rp": extract_domain(msg.get("Return-Path", "")),
+                 "mismatch": reason.startswith("Domain mismatch")}
+    while len(seen) > SEEN_LIMIT:
+        del seen[next(iter(seen))]
+
+
+def scan_user_junked(conn: imaplib.IMAP4_SSL, junk_imap: str, section: str, sec_state: dict) -> bool:
+    """迷惑メールフォルダの新着を確認し、本スクリプトが「保持」したメールがあれば
+    ユーザーが手動で迷惑メールにした（見逃し）として記録する。状態を変えたら True。
+    Yahoo 自身のフィルタ分は INBOX を経由しないため seen に存在せず、区別できる。"""
+    conn.select(junk_imap, readonly=True)
+    bulk_last = sec_state.get("bulk_last_uid")
+    _, data = conn.uid("search", None, "ALL" if bulk_last is None else f"UID {bulk_last + 1}:*")
+    uids = [u for u in data[0].split() if bulk_last is None or int(u) > bulk_last]
+    if not uids:
+        if bulk_last is None:
+            sec_state["bulk_last_uid"] = 0
+            return True
+        return False
+    if bulk_last is not None:  # 初回は位置合わせのみ
+        seen = sec_state.get("seen", {})
+        for uid in uids:
+            _, raw = conn.uid("fetch", uid, "(BODY.PEEK[HEADER])")
+            if not raw or raw[0] is None:
+                continue
+            msg = email.message_from_bytes(raw[0][1])
+            rec = seen.get(msg.get("Message-ID", "").strip())
+            if same_delivery(rec, msg) and rec["verdict"] == "kept":
+                rp = extract_domain(msg.get("Return-Path", ""))
+                fr = extract_domain(msg.get("From", ""))
+                log(f"[{section}] 見逃し検出（ユーザーが迷惑メールへ移動）: {decode_subject(msg)!r}"
+                    f"  差出人: {msg.get('From', '')}")
+                record_judgment(msg, rp, fr, None, "user_junked")
+                remember(sec_state, msg, "junked")
+    sec_state["bulk_last_uid"] = max(int(u) for u in uids)
+    return True
+
+
 def fetch_and_clean_imap(section: str, cfg: dict, state: dict, esp_whitelist: set[str]) -> None:
     host            = cfg["imap_server"]
     port            = int(cfg["imap_port"])
@@ -352,6 +417,10 @@ def fetch_and_clean_imap(section: str, cfg: dict, state: dict, esp_whitelist: se
     junk = resolve_junk_folder(conn, junk_folder_cfg)
     # スペースを含むフォルダ名は IMAP プロトコル上クォートが必要
     junk_imap = f'"{junk}"' if " " in junk else junk
+
+    sec_state = state.setdefault(section, {})
+    state_changed = scan_user_junked(conn, junk_imap, section, sec_state)
+    seen = sec_state.get("seen", {})
 
     conn.select("INBOX")
 
@@ -369,6 +438,8 @@ def fetch_and_clean_imap(section: str, cfg: dict, state: dict, esp_whitelist: se
 
     if not uid_list:
         conn.logout()
+        if state_changed:
+            save_state(state)
         return
 
     # 新着あり：ここから先はログを出力する
@@ -387,12 +458,25 @@ def fetch_and_clean_imap(section: str, cfg: dict, state: dict, esp_whitelist: se
 
         subject  = decode_subject(msg)
         from_hdr = msg.get("From", "")
-        is_spam, reason = check_spam(msg, esp_whitelist)
+        rec = seen.get(msg.get("Message-ID", "").strip())
+
+        if same_delivery(rec, msg) and rec["verdict"] == "moved":
+            # 以前こちらが移動したメールが INBOX に戻ってきた = ユーザーが誤検知を救済した。
+            # 再判定すると再び移動してしまうので、判定せず保持し、学習信号として扱う
+            is_spam, reason = False, ""
+            rp = extract_domain(msg.get("Return-Path", ""))
+            log(f"  [救済   UID={uid_int}] ユーザーが迷惑メールから戻したため保持: {subject!r}")
+            record_judgment(msg, rp, extract_domain(from_hdr), None, "user_rescued")
+            if rec["mismatch"] and rec["rp"]:
+                add_to_whitelist(rec["rp"], esp_whitelist)
+        else:
+            is_spam, reason = check_spam(msg, esp_whitelist)
 
         if is_spam:
             result, _ = conn.uid("copy", uid, junk_imap)
             if result == "OK":
                 conn.uid("store", uid, "+FLAGS", "\\Deleted")
+                remember(sec_state, msg, "moved", reason)
                 moved += 1
                 log(f"  [移動済 UID={uid_int}] 件名: {subject!r}")
                 log(f"           差出人: {from_hdr}")
@@ -402,6 +486,7 @@ def fetch_and_clean_imap(section: str, cfg: dict, state: dict, esp_whitelist: se
                 log(f"  [エラー UID={uid_int}] {junk!r} へのコピー失敗 — スキップ")
         else:
             kept += 1
+            remember(sec_state, msg, "kept")
             log(f"  [保持   UID={uid_int}] 件名: {subject!r}  差出人: {from_hdr}")
 
         if uid_int > max_uid:
@@ -412,11 +497,10 @@ def fetch_and_clean_imap(section: str, cfg: dict, state: dict, esp_whitelist: se
 
     conn.logout()
 
-    # 今回処理した最大 UID を保存
-    if max_uid > last_uid:
-        state.setdefault(section, {})["last_uid"] = max_uid
-        save_state(state)
-        log(f"[{section}] 状態保存 — last_uid={max_uid}")
+    # 今回処理した最大 UID と判定履歴を保存
+    sec_state["last_uid"] = max(max_uid, last_uid)
+    save_state(state)
+    log(f"[{section}] 状態保存 — last_uid={sec_state['last_uid']}")
 
     log(f"[{section}] 完了 — 保持: {kept} 件, 迷惑メールへ移動: {moved} 件")
 
