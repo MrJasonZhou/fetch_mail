@@ -28,6 +28,12 @@ wl = {"mpse.jp"}
 # 優先順位: DMARC/SPF/TLD が先に効く（Jev は呼ばれない）
 assert fm.check_spam(mk("a@x.xyz", "b@y.com", "hi", auth="dmarc=fail"), wl)[1].startswith("DMARC")
 assert fm.check_spam(mk("a@x.co.jp", "b@y.top", "hi"), wl)[1].startswith("Suspicious")
+# 未知の charset でも例外にならない
+assert fm.decode_subject(email.message_from_string("Subject: =?x-unknown?b?YWJj?=\n")) == "abc"
+# 件名の不可視文字（認証完備・ドメイン一致でも検知）。ZWJ の絵文字は対象外
+assert fm.check_spam(mk("a@x.com", "b@x.com", "【至急】還\u200b付\u200c金\ufeffの確認"), wl)[1].startswith("Invisible")
+assert not fm.check_spam(mk("a@x.com", "b@x.com", "家族で👨\u200d👩\u200d👧お出かけ"), wl)[0]
+assert not fm.check_spam(mk("a@x.com", "b@x.com", "ちょっと\u200bだけ"), wl)[0]  # 1 個は許容
 # SPF none/fail は DMARC pass なら無視、DMARC 結果なしなら適用
 assert not fm.check_spam(mk("a@x.co.jp", "b@x.co.jp", "hi", spf="none"), wl)[0]
 assert fm.check_spam(mk("a@x.co.jp", "b@x.co.jp", "hi", auth="spf=none", spf="none"), wl)[1] == "SPF check: none"

@@ -14,7 +14,8 @@ IMAP/POP3による差分スパムフィルター。
   1. Authentication-Results に dmarc=fail または dmarc=none が含まれる
   2. Received-SPF が none または fail（DMARC pass 時は適用しない）
   3. 送信ドメインが廉価・濫用の多い TLD を使用している
-  4. Return-Path のドメインと From のドメインが異なる（ESP ホワイトリスト除外）
+  4. 件名にゼロ幅スペース等の不可視文字が含まれる（キーワード検知逃れの手口）
+  5. Return-Path のドメインと From のドメインが異なる（ESP ホワイトリスト除外）
      → TypeSafe Jev で本当にスパムか再判定。正規と判断され、かつ
        Return-Path ドメイン自体も正規と判断されれば mail.ini の esp_whitelist に自動追加
 
@@ -49,7 +50,7 @@ from typing import Optional
 
 CONFIG_FILE = Path(__file__).parent / "mail.ini"
 STATE_FILE  = Path(__file__).parent / "state.json"
-JUDGMENT_LOG = Path(__file__).parent / "jev_judgments.jsonl"  # ルール4 の判定記録
+JUDGMENT_LOG = Path(__file__).parent / "jev_judgments.jsonl"  # ルール5 の判定記録
 SEED_LIMIT  = 32   # 初回実行時に処理するメッセージ数
 
 
@@ -88,7 +89,7 @@ SUSPICIOUS_TLDS = {
 
 
 JEV_API_KEY = ""  # mail.ini の typesafe_api_key（環境変数 TYPESAFE_API_KEY 優先）
-JUDGMENT_LOG_ENABLED = False  # mail.ini の jev_judgment_log（ルール4 の判定を JSONL に記録するか）
+JUDGMENT_LOG_ENABLED = False  # mail.ini の jev_judgment_log（ルール5 の判定を JSONL に記録するか）
 JEV_FAIL_AS_SPAM = True  # Jev 判定不可時にスパム扱いするか（POP3 では False）
 CURRENT_SECTION = ""  # 実行中のセクション名（自動ホワイトリストの書き込み先）
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
@@ -162,7 +163,7 @@ def jev_judge(msg: email.message.Message, rp: str) -> Optional[tuple[float, floa
 
 def record_judgment(msg: email.message.Message, rp: str, fr: str,
                     p: Optional[float], decision: str, domain_ok: Optional[float] = None) -> None:
-    """ルール4 の判定を JSONL で別途記録する（1〜2 か月後に策略の妥当性を検証するため）。"""
+    """ルール5 の判定を JSONL で別途記録する（1〜2 か月後に策略の妥当性を検証するため）。"""
     if not JUDGMENT_LOG_ENABLED:
         return
     auth = " ".join(msg.get_all("Authentication-Results", [])).lower()
@@ -240,6 +241,8 @@ def extract_tld(domain: str) -> str:
     return domain.rsplit(".", 1)[-1].lower()
 
 
+INVISIBLE_CHARS = re.compile("[\u200b\u200c\u2060-\u2064\ufeff\u00ad]")
+
 TRUSTED_AUTHSERV = "yahoo.co.jp"  # 受信サーバー（Authentication-Results の authserv-id）
 
 
@@ -286,7 +289,14 @@ def check_spam(msg: email.message.Message, esp_whitelist: set[str]) -> tuple[boo
     if tld in SUSPICIOUS_TLDS:
         return True, f"Suspicious TLD: .{tld} (domain={sending_domain!r})"
 
-    # ルール4 – 送信ドメイン不一致（誤検知が多いため最後に判定し、Jev で再確認）
+    # ルール4 – 件名の不可視文字（ゼロ幅スペース等で「還付金」等のキーワード検知を逃れる手口）
+    # 認証を完備した独自ドメインのスパムはルール1〜3・5 をすり抜けるため、その対策。
+    # ZWJ（U+200D: 絵文字の結合に使用）と LRM/RLM（U+200E/F）は正規メールでも使われるので除外
+    n_invisible = len(INVISIBLE_CHARS.findall(decode_subject(msg)))
+    if n_invisible >= 2:
+        return True, f"Invisible characters in subject: {n_invisible}"
+
+    # ルール5 – 送信ドメイン不一致（誤検知が多いため最後に判定し、Jev で再確認）
     if rp and fr and rp != fr:
         reason = f"Domain mismatch: Return-Path={rp!r}, From={fr!r}"
         if rp in esp_whitelist:
@@ -318,7 +328,10 @@ def decode_subject(msg: email.message.Message) -> str:
     out = []
     for part, charset in parts:
         if isinstance(part, bytes):
-            out.append(part.decode(charset or "utf-8", errors="replace"))
+            try:
+                out.append(part.decode(charset or "utf-8", errors="replace"))
+            except LookupError:  # 未知の charset で処理全体が止まらないよう UTF-8 で代替
+                out.append(part.decode("utf-8", errors="replace"))
         else:
             out.append(part)
     return "".join(out)

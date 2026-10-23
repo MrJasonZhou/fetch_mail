@@ -84,17 +84,17 @@ username    = your_yahoo_japan_id
 email       = your_address@ymail.ne.jp
 password    = your_password
 
-; 任意：ESP ホワイトリスト（カンマ区切り。Return-Path ドメインがこのリストにある場合はルール4をスキップ。Jev が正規と判定したドメインは自動追記される）
+; 任意：ESP ホワイトリスト（カンマ区切り。Return-Path ドメインがこのリストにある場合はルール5をスキップ。Jev が正規と判定したドメインは自動追記される）
 ; 信頼できる送信サービス（Return-Path と From が一致しない場合があるもの）を登録
 esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktomail.com, salesforce.com, exacttarget.com, m-msg.jp, msg-m.jp, bmsend.com, benchmarkemail.com, hubspot.com, hubspotemail.net, cmail1.com, shopify.com, mandrillapp.com, mailgun.org, postmarkapp.com, constantcontact.com, brevo.com, combzmail.jp, itm-asp.com, customer-s.jp, yahoofp.jp, mail-mag.jp
 
 ; 任意：迷惑メールフォルダ名を指定（空欄の場合は自動検出）
 ; junk_folder = Bulk Mail
 
-; 任意：TypeSafe API キー（ルール4の Jev 再判定用。環境変数 TYPESAFE_API_KEY が優先）
+; 任意：TypeSafe API キー（ルール5の Jev 再判定用。環境変数 TYPESAFE_API_KEY が優先）
 ; typesafe_api_key = your_typesafe_api_key
 
-; 任意：ルール4 の判定を jev_judgments.jsonl に記録するか（既定 false）
+; 任意：ルール5 の判定を jev_judgments.jsonl に記録するか（既定 false）
 ; jev_judgment_log = false
 ```
 
@@ -107,7 +107,8 @@ esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktom
 | 1 | DMARC | `Authentication-Results` に `dmarc=fail` または `dmarc=none` を含む |
 | 2 | SPF | `Received-SPF` が `none` または `fail`（DMARC が pass の場合は適用しない。サブドメインに SPF 未設定の正規メールを誤検知しないため） |
 | 3 | 低価格 TLD | 送信ドメインが悪用率の高い TLD（`.top` `.xyz` `.icu` `.cfd` `.club` など）を使用 |
-| 4 | ドメイン不一致 | `Return-Path` のドメインが `From` のドメインと異なる（ESP ホワイトリストを除く）。誤検知が多いため、[TypeSafe](https://typesafe.ai) の Jev で差出人・返信先・件名などから再判定する。スパム確率 0.5 以上でスパム、0.2 未満かつ Jev が `Return-Path` ドメイン自体を正規（ランダム文字列等でない）と判断した場合（確率 0.7 以上）のみ `mail.ini` の `esp_whitelist` に自動追加。API キー未設定・呼び出し失敗時は IMAP ではスパム扱い（迷惑メールフォルダへ移動）、POP3 では削除が不可逆なため保持。`jev_judgment_log = true` の場合、ルール4 の全判定（ホワイトリスト通過を含む）を `jev_judgments.jsonl` に記録 |
+| 4 | 不可視文字 | 件名にゼロ幅スペース等の不可視文字（U+200B, U+200C, U+2060〜2064, U+FEFF, U+00AD）が 2 個以上含まれる。「還付金」等のキーワード検知を逃れる手口で、認証を完備した独自ドメインのスパムにも有効 |
+| 5 | ドメイン不一致 | `Return-Path` のドメインが `From` のドメインと異なる（ESP ホワイトリストを除く）。誤検知が多いため、[TypeSafe](https://typesafe.ai) の Jev で差出人・返信先・件名などから再判定する。スパム確率 0.5 以上でスパム、0.2 未満かつ Jev が `Return-Path` ドメイン自体を正規（ランダム文字列等でない）と判断した場合（確率 0.7 以上）のみ `mail.ini` の `esp_whitelist` に自動追加。API キー未設定・呼び出し失敗時は IMAP ではスパム扱い（迷惑メールフォルダへ移動）、POP3 では削除が不可逆なため保持。`jev_judgment_log = true` の場合、ルール5 の全判定（ホワイトリスト通過を含む）を `jev_judgments.jsonl` に記録 |
 
 ---
 
