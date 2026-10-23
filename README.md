@@ -116,7 +116,8 @@ esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktom
 
 - 初回実行：最新 32 件を起点とし、最大の IMAP UID を保存
 - 2 回目以降：`UID > last_uid` の新着メールのみを処理し、重複処理を回避
-- 状態は `state.json` に保存
+- 状態は `state.json` に保存（`last_uid`、迷惑メールフォルダの確認位置 `bulk_last_uid`、直近 2000 件の判定履歴 `seen`）
+- 判定履歴は Message-ID と最上部 `Received` ヘッダーのハッシュで照合（Message-ID は送信側が偽造・再利用できるため）
 
 ---
 
@@ -124,6 +125,9 @@ esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktom
 
 - **保持**：検査を通過したメールはそのまま残す
 - **移動**：迷惑メールと判定したメールを `Bulk Mail` へコピー → 元メールに削除フラグを付与 → EXPUNGE
+- **救済**：本スクリプトが移動したメールをユーザーが受信箱に戻した場合、再判定せず保持（理由がドメイン不一致なら送信ドメインをホワイトリストへ追加）
+- **見逃し記録**：本スクリプトが保持したメールをユーザーが迷惑メールフォルダへ移した場合、`jev_judgments.jsonl` に記録
+- POP3 モードでは移動の代わりにサーバーから削除（救済・見逃し記録は IMAP のみ）
 
 ---
 
@@ -135,8 +139,30 @@ esp_whitelist = mpse.jp, amazonses.com, sendgrid.net, mcsv.net, rsgsv.net, mktom
 [2026-05-19 19:30:57]   [移動済 UID=223260] 件名: 'iCloud次回請求についてのお知らせ'
 [2026-05-19 19:30:57]            差出人: iCloud <info@suspicious.top>
 [2026-05-19 19:30:57]            理由  : Suspicious TLD: .top (domain='suspicious.top')
+[2026-05-19 19:30:57]            Msg-ID: <abc123@suspicious.top>
 [2026-05-19 19:30:58] [YahooJapanMail] 完了 — 保持: 2 件, 迷惑メールへ移動: 1 件
 ```
+
+`理由` の種類:
+
+| 理由 | ルール |
+|------|------|
+| `DMARC check: dmarc=fail` / `none` | 1 |
+| `SPF check: none` / `fail` | 2 |
+| `Suspicious TLD: .xxx (domain=...)` | 3 |
+| `Invisible characters in subject: N` | 4 |
+| `Domain mismatch: Return-Path=..., From=..., Jev spam=0.83` | 5（Jev 呼び出し失敗時は `Jev spam` なし） |
+
+その他の主なログ行:
+
+```
+  Jev 判定: 正規メール (spam=0.15, domain_ok=0.96) — Domain mismatch: ...   # ルール5 で Jev が正規と判断
+  ホワイトリストに追加: docomo.ne.jp                                      # 自動ホワイトリスト追加
+  [救済   UID=...] ユーザーが迷惑メールから戻したため保持: '...'          # 誤検知の救済
+  [YahooJapanMail] 見逃し検出（ユーザーが迷惑メールへ移動）: '...'         # 見逃しの記録
+```
+
+迷惑メールフォルダ内のメールが本スクリプトと Yahoo 自身のフィルタのどちらによるものかは、メールの Message-ID で `fetch_mail.log` を検索すれば判別できます（見つからなければ Yahoo による判定）。
 
 ---
 
